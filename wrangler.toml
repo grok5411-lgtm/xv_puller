@@ -1,0 +1,6 @@
+name = "xv-puller"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+BASE_URL = "https://www.xv-ru.com"
