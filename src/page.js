@@ -38,7 +38,7 @@ export function renderCard(v) {
 </div>`;
 }
 
-export function renderPage({ query, videos, seed }) {
+export function renderPage({ query, videos, seed, error }) {
   const cards = videos.map(renderCard).join("\n");
   const nextSeed = Math.floor(Math.random() * 1e9);
   const q = escapeHtml(query || "");
@@ -91,6 +91,7 @@ export function renderPage({ query, videos, seed }) {
 <main id="content">
   <div class="bar"><span>${videos.length} видео</span><a href="/?q=${encodeURIComponent(query || "")}&seed=${nextSeed}">Обновить ленту</a></div>
   ${cards ? `<div class="mozaique cust-nb-cols">${cards}</div>` : `<div class="empty">Ничего не нашлось. Попробуй описать иначе.</div>`}
+  ${error ? `<div class="empty" style="padding:10px;font-size:12px;color:#a55">${escapeHtml(error)}</div>` : ""}
 </main>
 <footer>xv_puller · лента генерируется процедурно</footer>
 </body>
