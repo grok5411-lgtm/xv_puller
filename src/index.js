@@ -179,9 +179,11 @@ async function handleFeed(base, url, env, ctx, started) {
   return json({
     q,
     seed,
+    persona: feed.persona,
     tags: feed.tags,
     count: feed.videos.length,
     videos: feed.videos,
+    reserve: feed.reserve,
   });
 }
 
