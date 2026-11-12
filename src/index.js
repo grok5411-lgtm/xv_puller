@@ -121,13 +121,14 @@ async function handlePage(base, url, env, ctx, started) {
 
   const q = (url.searchParams.get("q") || "").trim();
   const seed = url.searchParams.get("seed") || (q ? todayKey() : String(Date.now()));
+  const p = (url.searchParams.get("p") || "").trim();
 
   let videos = [];
   let tags = [];
   let error = "";
 
   try {
-    const feed = await buildFeed(base, q, seed);
+    const feed = await buildFeed(base, q, seed, 36, p);
     videos = feed.videos;
     tags = feed.tags;
   } catch (e) {
@@ -162,8 +163,9 @@ async function handleFeed(base, url, env, ctx, started) {
   const q = (url.searchParams.get("q") || "").trim();
   const seed = url.searchParams.get("seed") || (q ? todayKey() : String(Date.now()));
   const size = Math.min(parseInt(url.searchParams.get("size") || "36", 10) || 36, 60);
+  const p = (url.searchParams.get("p") || "").trim();
 
-  const feed = await buildFeed(base, q, seed, size);
+  const feed = await buildFeed(base, q, seed, size, p);
   ctx.waitUntil(
     writeLog(env, {
       ts: new Date().toISOString(),
@@ -179,6 +181,7 @@ async function handleFeed(base, url, env, ctx, started) {
   return json({
     q,
     seed,
+    profile: p,
     persona: feed.persona,
     tags: feed.tags,
     count: feed.videos.length,
