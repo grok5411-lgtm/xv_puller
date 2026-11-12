@@ -1,19 +1,23 @@
 /**
  * xv_puller — Cloudflare Worker
  *
- * Прокси к xv-ru.com: случайный тег -> случайная страница -> случайное видео.
- *
  * GET /                 — справка
- * GET /tags             — JSON: все теги со страницы /tags
- * GET /pick?tag=daddy&page=5  — случайное видео с указанной/случайной страницы
- * GET /random           — случайный тег + случайная страница + случайное видео
- * GET /tags?format=text — теги построчно (text/plain)
+ * GET /tags             — все теги (JSON), ?format=text — построчно
+ * GET /pick?tag=daddy&page=5 — случайное видео
+ * GET /random           — случайный тег + страница + видео
+ * GET /logs?limit=50    — последние записи лога
  *
- * Переменные окружения (wrangler.toml [vars]):
- *   BASE_URL — по умолчанию https://www.xv-ru.com
+ * Секреты (wrangler secret put):
+ *   GITHUB_TOKEN — fine-grained PAT, Contents: Read and write
+ * Переменные ([vars]):
+ *   BASE_URL, GITHUB_REPO, GITHUB_BRANCH, GITHUB_LOG_PATH
  */
 
 const DEFAULT_BASE = "https://www.xv-ru.com";
+const DEFAULT_REPO = "grok5411-lgtm/xv_puller";
+const DEFAULT_BRANCH = "logs";
+const DEFAULT_LOG_PATH = "logs/requests.log";
+const MAX_LOG_LINES = 300;
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -26,13 +30,15 @@ const CORS = {
 };
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const base = (env.BASE_URL || DEFAULT_BASE).replace(/\/+$/, "");
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS });
     }
+
+    const started = Date.now();
 
     try {
       switch (url.pathname) {
@@ -41,16 +47,29 @@ export default {
         case "/tags":
           return await handleTags(base, url);
         case "/pick":
-          return await handlePick(base, url);
+          return await handlePick(base, url, env, ctx, started);
         case "/random":
-          return await handleRandom(base);
+          return await handleRandom(base, env, ctx, started);
+        case "/logs":
+          return await handleLogs(env, url);
         default:
-          return json({ error: "not found", endpoints: ["/tags", "/pick", "/random"] }, 404);
+          return json({ error: "not found", endpoints: ["/tags", "/pick", "/random", "/logs"] }, 404);
       }
     } catch (e) {
+      const message = String(e && e.message ? e.message : e);
+      ctx.waitUntil(
+        writeLog(env, {
+          ts: new Date().toISOString(),
+          path: url.pathname,
+          query: url.search,
+          status: "error",
+          error: message.slice(0, 300),
+          ms: Date.now() - started,
+        })
+      );
       return json(
         {
-          error: String(e && e.message ? e.message : e),
+          error: message,
           hint:
             "Если это 403/timeout с xv-ru.com — сайт блокирует IP Cloudflare. " +
             "Нужен исходящий прокси или другой хост.",
@@ -73,7 +92,7 @@ async function handleTags(base, url) {
   return json({ count: tags.length, tags });
 }
 
-async function handlePick(base, url) {
+async function handlePick(base, url, env, ctx, started) {
   let tag = (url.searchParams.get("tag") || "").trim();
   if (!tag) {
     const tags = parseTags(await getHtml(base, "/tags"));
@@ -82,15 +101,55 @@ async function handlePick(base, url) {
   }
   tag = normalizeTag(tag);
   const result = await pickForTag(base, tag, url.searchParams.get("page"));
+
+  ctx.waitUntil(
+    writeLog(env, {
+      ts: new Date().toISOString(),
+      path: "/pick",
+      tag: result.tag,
+      page: result.page,
+      pages: result.pages,
+      video: result.video.url,
+      title: result.video.title.slice(0, 120),
+      ms: Date.now() - started,
+    })
+  );
   return json(result);
 }
 
-async function handleRandom(base) {
+async function handleRandom(base, env, ctx, started) {
   const tags = parseTags(await getHtml(base, "/tags"));
   if (!tags.length) throw new Error("не удалось получить список тегов");
   const tag = tags[Math.floor(Math.random() * tags.length)];
   const result = await pickForTag(base, tag, null);
+
+  ctx.waitUntil(
+    writeLog(env, {
+      ts: new Date().toISOString(),
+      path: "/random",
+      tag: result.tag,
+      page: result.page,
+      pages: result.pages,
+      video: result.video.url,
+      title: result.video.title.slice(0, 120),
+      ms: Date.now() - started,
+    })
+  );
   return json(result);
+}
+
+async function handleLogs(env, url) {
+  const repo = env.GITHUB_REPO || DEFAULT_REPO;
+  const branch = env.GITHUB_BRANCH || DEFAULT_BRANCH;
+  const path = env.GITHUB_LOG_PATH || DEFAULT_LOG_PATH;
+  const limit = Math.min(parseInt(url.searchParams.get("limit") || "50", 10) || 50, MAX_LOG_LINES);
+
+  const file = await ghGet(env, repo, path, branch);
+  if (!file) return json({ count: 0, log: [] });
+  const lines = file.text.split("\n").filter(Boolean).slice(-limit);
+  return new Response(lines.join("\n") + "\n", {
+    headers: { ...CORS, "Content-Type": "application/x-ndjson; charset=utf-8" },
+  });
 }
 
 /* --------------------------- core logic ----------------------------- */
@@ -219,6 +278,99 @@ function parseTags(html) {
   return out;
 }
 
+/* ------------------------------ logs -------------------------------- */
+
+async function writeLog(env, entry) {
+  const token = env.GITHUB_TOKEN;
+  if (!token) return;
+
+  const repo = env.GITHUB_REPO || DEFAULT_REPO;
+  const branch = env.GITHUB_BRANCH || DEFAULT_BRANCH;
+  const path = env.GITHUB_LOG_PATH || DEFAULT_LOG_PATH;
+
+  try {
+    const file = await ghGet(env, repo, path, branch);
+    const old = file ? file.text.split("\n").filter(Boolean) : [];
+    const lines = old.concat(JSON.stringify(entry)).slice(-MAX_LOG_LINES);
+    const body = lines.join("\n") + "\n";
+
+    await ghPut(env, repo, path, branch, body, file ? file.sha : null,
+      `log: ${entry.path} ${entry.tag || "-"} ${entry.page || "-"}`);
+  } catch {
+    // логи не должны ломать ответ
+  }
+}
+
+async function ghGet(env, repo, path, ref) {
+  const r = await fetch(
+    `https://api.github.com/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`,
+    { headers: ghHeaders(env) }
+  );
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`gh get ${r.status}`);
+  const data = await r.json();
+  return { sha: data.sha, text: b64decode(data.content || "") };
+}
+
+async function ghPut(env, repo, path, branch, body, sha, message) {
+  const payload = {
+    message,
+    content: b64encode(body),
+    branch,
+    ...(sha ? { sha } : {}),
+  };
+  let r = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
+    method: "PUT",
+    headers: ghHeaders(env),
+    body: JSON.stringify(payload),
+  });
+
+  if (r.status === 404 || r.status === 409 || r.status === 422) {
+    await ensureBranch(env, repo, branch);
+    r = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
+      method: "PUT",
+      headers: ghHeaders(env),
+      body: JSON.stringify({ ...payload, sha: undefined }),
+    });
+  }
+  if (!r.ok) throw new Error(`gh put ${r.status}`);
+}
+
+async function ensureBranch(env, repo, branch) {
+  const ref = await fetch(`https://api.github.com/repos/${repo}/git/ref/heads/main`, {
+    headers: ghHeaders(env),
+  });
+  if (!ref.ok) return;
+  const { object } = await ref.json();
+  await fetch(`https://api.github.com/repos/${repo}/git/refs`, {
+    method: "POST",
+    headers: ghHeaders(env),
+    body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: object.sha }),
+  });
+}
+
+function ghHeaders(env) {
+  return {
+    Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "xv-puller-worker",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+}
+
+function b64encode(s) {
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+function b64decode(s) {
+  const bin = atob(s.replace(/\s+/g, ""));
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
 /* ----------------------------- helpers ------------------------------ */
 
 async function getHtml(base, path) {
@@ -303,5 +455,6 @@ GET /tags?format=text        — то же, построчно
 GET /pick?tag=daddy          — случайная страница + случайное видео
 GET /pick?tag=daddy&page=5   — конкретная страница
 GET /random                  — случайный тег целиком
+GET /logs?limit=50           — последние записи лога (NDJSON)
 `;
 }
