@@ -95,35 +95,35 @@ function todayKey() {
 
 async function handlePage(base, url, env, ctx, started) {
   const q = (url.searchParams.get("q") || "").trim();
-  const seed = url.searchParams.get("seed") || todayKey();
+  const seed = url.searchParams.get("seed") || (q ? todayKey() : String(Date.now()));
 
   let videos = [];
   let tags = [];
   let error = "";
 
-  if (q) {
-    try {
-      const feed = await buildFeed(base, q, seed);
-      videos = feed.videos;
-      tags = feed.tags;
-    } catch (e) {
-      error = String(e && e.message ? e.message : e);
-    }
-    ctx.waitUntil(
-      writeLog(env, {
-        ts: new Date().toISOString(),
-        path: "/",
-        q,
-        tags,
-        count: videos.length,
-        status: error ? "error" : "ok",
-        error: error ? error.slice(0, 200) : undefined,
-        ms: Date.now() - started,
-      })
-    );
+  try {
+    const feed = await buildFeed(base, q, seed);
+    videos = feed.videos;
+    tags = feed.tags;
+  } catch (e) {
+    error = String(e && e.message ? e.message : e);
   }
 
-  const html = renderPage({ query: q, videos, seed });
+  ctx.waitUntil(
+    writeLog(env, {
+      ts: new Date().toISOString(),
+      path: "/",
+      q,
+      seed,
+      tags,
+      count: videos.length,
+      status: error ? "error" : "ok",
+      error: error ? error.slice(0, 200) : undefined,
+      ms: Date.now() - started,
+    })
+  );
+
+  const html = renderPage({ query: q, videos, seed, error });
   return new Response(html, {
     headers: { ...CORS, "Content-Type": "text/html; charset=utf-8" },
   });
