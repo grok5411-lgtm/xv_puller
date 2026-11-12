@@ -94,6 +94,31 @@ function todayKey() {
 }
 
 async function handlePage(base, url, env, ctx, started) {
+  if (env.ASSETS) {
+    const assetUrl = new URL("/template.html", url);
+    const res = await env.ASSETS.fetch(new Request(assetUrl, { headers: request0Headers() }));
+    if (res.ok) {
+      let html = await res.text();
+      html = html.replace(
+        /<\/body>/i,
+        '<script src="/app.js" defer></script></body>'
+      );
+      ctx.waitUntil(
+        writeLog(env, {
+          ts: new Date().toISOString(),
+          path: "/",
+          q: url.searchParams.get("q") || "",
+          status: "ok",
+          mode: "template",
+          ms: Date.now() - started,
+        })
+      );
+      return new Response(html, {
+        headers: { ...CORS, "Content-Type": "text/html; charset=utf-8" },
+      });
+    }
+  }
+
   const q = (url.searchParams.get("q") || "").trim();
   const seed = url.searchParams.get("seed") || (q ? todayKey() : String(Date.now()));
 
@@ -127,6 +152,10 @@ async function handlePage(base, url, env, ctx, started) {
   return new Response(html, {
     headers: { ...CORS, "Content-Type": "text/html; charset=utf-8" },
   });
+}
+
+function request0Headers() {
+  return { "User-Agent": UA, Accept: "text/html" };
 }
 
 async function handleFeed(base, url, env, ctx, started) {
