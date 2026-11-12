@@ -2,6 +2,7 @@
   const params = new URLSearchParams(location.search);
   const q = params.get("q") || "";
   const seed = params.get("seed") || "";
+  const p = params.get("p") || "";
 
   const form = document.getElementById("xv-search-form");
   if (form) {
@@ -10,8 +11,7 @@
     form.addEventListener("submit", function (e) {
       e.preventDefault();
       const v = input ? input.value.trim() : "";
-      location.href = "/?q=" + encodeURIComponent(v);
-    });
+      location.href = "/?q=" + encodeURIComponent(v);    });
   }
 
   document.querySelectorAll(".search-premium-tabs, .search-filters, .pagination").forEach(function (el) {
@@ -110,9 +110,16 @@
       });
   }
 
+  function feedUrl(s) {
+    return (
+      "/feed?q=" + encodeURIComponent(q) +
+      (p ? "&p=" + encodeURIComponent(p) : "") +
+      (s ? "&seed=" + encodeURIComponent(s) : "")
+    );
+  }
+
   setTitle();
-  const url = "/feed?q=" + encodeURIComponent(q) + (seed ? "&seed=" + encodeURIComponent(seed) : "");
-  load(url, false);
+  load(feedUrl(seed), false);
 
   const more = document.createElement("button");
   more.textContent = "Показать ещё";
@@ -120,7 +127,7 @@
   more.style.cssText = "display:block;margin:24px auto;padding:10px 24px;cursor:pointer";
   more.addEventListener("click", function () {
     more.disabled = true;
-    load("/feed?q=" + encodeURIComponent(q) + "&seed=" + Math.floor(Math.random() * 1e9), true)
+    load(feedUrl(String(Math.floor(Math.random() * 1e9))), true)
       .finally(function () { more.disabled = false; });
   });
   grid.parentNode.insertBefore(more, grid.nextSibling);
