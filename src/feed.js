@@ -1,5 +1,5 @@
 import taxonomy from "./taxonomy.json";
-import { getHtml, lastPage, parseVideos } from "./site.js";
+import { getHtml, lastPage, parseVideos, thumbOk } from "./site.js";
 
 /* ------------------------- seeded randomness ------------------------ */
 
@@ -61,10 +61,22 @@ export function personaTags(query) {
 
 /* ------------------------------ feed -------------------------------- */
 
+export function personaName(query, seedStr) {
+  const q = String(query || "").toLowerCase();
+  const ids = taxonomy.clusters
+    .filter((c) => c.aliases.some((a) => q.includes(a)))
+    .map((c) => c.id);
+  const base = ids.length ? ids.slice(0, 2).join("_") : "guest";
+  const n = 10 + (hashStr(`${query}|${seedStr}`) % 90);
+  return `${base}_${n}`;
+}
+
 const MAX_PAGES = 4;
+const RESERVE = 12;
 
 export async function buildFeed(base, query, seedStr, size = 36) {
   const rng = mulberry32(hashStr(`${query}|${seedStr}`));
+  const persona = personaName(query, seedStr);
 
   let tags = personaTags(query);
   if (!tags.length) tags = shuffle(taxonomy.chaos, rng);
@@ -86,14 +98,32 @@ export async function buildFeed(base, query, seedStr, size = 36) {
   for (const r of results) {
     if (r.status !== "fulfilled") continue;
     for (const v of r.value) {
-      if (seen.has(v.url)) continue;
+      if (seen.has(v.url) || !v.thumbnail) continue;
       seen.add(v.url);
       all.push(v);
     }
   }
 
-  const videos = shuffle(all, rng).slice(0, size);
-  return { tags: chosen, videos, found: all.length };
+  const pool = shuffle(all, rng).slice(0, size + RESERVE);
+  const valid = await checkThumbs(pool);
+
+  return {
+    persona,
+    tags: chosen,
+    videos: valid.slice(0, size),
+    reserve: valid.slice(size, size + RESERVE),
+    found: all.length,
+  };
+}
+
+async function checkThumbs(list, batch = 10) {
+  const ok = [];
+  for (let i = 0; i < list.length; i += batch) {
+    const chunk = list.slice(i, i + batch);
+    const res = await Promise.all(chunk.map((v) => thumbOk(v.thumbnail)));
+    chunk.forEach((v, j) => { if (res[j]) ok.push(v); });
+  }
+  return ok;
 }
 
 async function videosFromTag(base, tag, rng) {
