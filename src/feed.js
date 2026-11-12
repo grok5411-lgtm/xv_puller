@@ -94,6 +94,17 @@ export async function buildFeed(base, query, seedStr, size = 36, profileId = "")
     }
   }
 
+  // Секретный фетиш: изредка подмешивается вместо одного из обычных тегов.
+  if (profile && profile.secret && profile.secret.tags && profile.secret.tags.length) {
+    const chance = profile.secret.chance == null ? 0.35 : profile.secret.chance;
+    if (rng() < chance) {
+      const st = profile.secret.tags[Math.floor(rng() * profile.secret.tags.length)];
+      if (!chosen.includes(st)) {
+        chosen[chosen.length - 1] = st;
+      }
+    }
+  }
+
   const results = await Promise.allSettled(
     chosen.map((tag) => videosFromTag(base, tag, rng))
   );
