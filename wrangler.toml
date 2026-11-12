@@ -2,6 +2,9 @@ name = "xv-puller"
 main = "src/index.js"
 compatibility_date = "2026-01-01"
 
+[assets]
+directory = "./public"
+
 [vars]
 BASE_URL = "https://www.xv-ru.com"
 GITHUB_REPO = "grok5411-lgtm/xv_puller"
