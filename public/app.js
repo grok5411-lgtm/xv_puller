@@ -14,8 +14,6 @@
     });
   }
 
-  document.title = "Свежие видео";
-
   document.querySelectorAll(".search-premium-tabs, .search-filters, .pagination").forEach(function (el) {
     el.remove();
   });
@@ -24,9 +22,10 @@
   if (!grid) return;
 
   const title = document.querySelector("h2.page-title");
-  if (title) title.innerHTML = "Видео для вас <span class=\"sub\"></span>";
-
   grid.innerHTML = '<div style="padding:40px;color:#999">Загрузка…</div>';
+
+  let reserve = [];
+  let persona = "guest_00";
 
   function esc(s) {
     return String(s == null ? "" : s)
@@ -52,7 +51,7 @@
       : "";
     const dur = v.duration ? '<span class="duration">' + esc(v.duration) + "</span>" : "";
     return (
-      '<div id="video_' + esc(v.id) + '" class="frame-block thumb-block tb_full_init tbm-init-ok">' +
+      '<div id="video_' + esc(v.id) + '" class="frame-block thumb-block tb_full_init tbm-init-ok" data-vid="' + esc(v.url) + '">' +
         '<div class="thumb-inside"><div class="thumb">' +
           '<a href="' + esc(v.url) + '" target="_blank" rel="noopener noreferrer">' +
             (thumb ? '<img src="' + esc(thumb) + '" loading="lazy" alt="">' : "") +
@@ -67,16 +66,43 @@
     );
   }
 
+  function swapBroken(img) {
+    const block = img.closest(".thumb-block");
+    if (!block) return;
+    const next = reserve.shift();
+    if (!next) { block.remove(); return; }
+    block.outerHTML = card(next);
+    bindFallback(block.parentNode);
+  }
+
+  function bindFallback(root) {
+    root.querySelectorAll(".thumb img").forEach(function (img) {
+      if (img.dataset.bound) return;
+      img.dataset.bound = "1";
+      img.addEventListener("error", function () { swapBroken(img); });
+    });
+  }
+
+  function setTitle(n) {
+    const html = 'Ваша история <span class="sub">(аккаунт: ' + esc(persona) + ")</span>";
+    if (title) title.innerHTML = html;
+    document.title = "Ваша история (аккаунт: " + persona + ")";
+    const sub = title && title.querySelector(".sub");
+    if (sub && n != null) sub.textContent = "(аккаунт: " + persona + ")";
+  }
+
   function load(url, append) {
     return fetch(url)
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data || !data.videos) throw new Error(data && data.error || "ошибка");
+        persona = data.persona || persona;
+        reserve = reserve.concat(data.reserve || []);
         const html = data.videos.map(card).join("");
         if (append) grid.insertAdjacentHTML("beforeend", html);
         else grid.innerHTML = html;
-        const sub = document.querySelector("h2.page-title .sub");
-        if (sub) sub.textContent = "(" + (grid.children.length) + " результатов)";
+        setTitle();
+        bindFallback(grid);
         return data;
       })
       .catch(function (e) {
@@ -84,6 +110,7 @@
       });
   }
 
+  setTitle();
   const url = "/feed?q=" + encodeURIComponent(q) + (seed ? "&seed=" + encodeURIComponent(seed) : "");
   load(url, false);
 
