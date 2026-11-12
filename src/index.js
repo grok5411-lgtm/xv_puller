@@ -1,27 +1,30 @@
 /**
  * xv_puller — Cloudflare Worker
  *
- * GET /                 — справка
- * GET /tags             — все теги (JSON), ?format=text — построчно
- * GET /pick?tag=daddy&page=5 — случайное видео
- * GET /random           — случайный тег + страница + видео
- * GET /logs?limit=50    — последние записи лога
+ * GET /                     — страница-лента (?q=описание)
+ * GET /feed?q=...           — та же лента в JSON
+ * GET /tags                 — все теги (JSON), ?format=text — построчно
+ * GET /pick?tag=daddy&page=5 — случайное видео по тегу
+ * GET /random               — случайный тег + страница + видео
+ * GET /logs?limit=50        — последние записи лога (NDJSON)
+ * GET /a?u=<url>            — прокси картинок (allowed: xv-*.cdn)
  *
- * Секреты (wrangler secret put):
- *   GITHUB_TOKEN — fine-grained PAT, Contents: Read and write
- * Переменные ([vars]):
- *   BASE_URL, GITHUB_REPO, GITHUB_BRANCH, GITHUB_LOG_PATH
+ * Секреты: GITHUB_TOKEN (Contents: Read and write)
+ * Переменные: BASE_URL, GITHUB_REPO, GITHUB_BRANCH, GITHUB_LOG_PATH
  */
 
-const DEFAULT_BASE = "https://www.xv-ru.com";
+import {
+  DEFAULT_BASE, UA, clampPage, getHtml, lastPage, normalizeTag, parseTags, parseVideos,
+} from "./site.js";
+import { buildFeed } from "./feed.js";
+import { renderPage } from "./page.js";
+
 const DEFAULT_REPO = "grok5411-lgtm/xv_puller";
 const DEFAULT_BRANCH = "logs";
 const DEFAULT_LOG_PATH = "logs/requests.log";
 const MAX_LOG_LINES = 300;
 
-const UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-  "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+const ASSET_HOSTS = ["xvideos-cdn.com", "xv-ru.com", "xvideos.com"];
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -43,7 +46,11 @@ export default {
     try {
       switch (url.pathname) {
         case "/":
-          return text(help(base));
+          return await handlePage(base, url, env, ctx, started);
+        case "/feed":
+          return await handleFeed(base, url, env, ctx, started);
+        case "/a":
+          return await handleAsset(url);
         case "/tags":
           return await handleTags(base, url);
         case "/pick":
@@ -53,7 +60,7 @@ export default {
         case "/logs":
           return await handleLogs(env, url);
         default:
-          return json({ error: "not found", endpoints: ["/tags", "/pick", "/random", "/logs"] }, 404);
+          return json({ error: "not found", endpoints: ["/", "/feed", "/tags", "/pick", "/random", "/logs"] }, 404);
       }
     } catch (e) {
       const message = String(e && e.message ? e.message : e);
@@ -81,6 +88,109 @@ export default {
 };
 
 /* ----------------------------- handlers ----------------------------- */
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+async function handlePage(base, url, env, ctx, started) {
+  const q = (url.searchParams.get("q") || "").trim();
+  const seed = url.searchParams.get("seed") || todayKey();
+
+  let videos = [];
+  let tags = [];
+  let error = "";
+
+  if (q) {
+    try {
+      const feed = await buildFeed(base, q, seed);
+      videos = feed.videos;
+      tags = feed.tags;
+    } catch (e) {
+      error = String(e && e.message ? e.message : e);
+    }
+    ctx.waitUntil(
+      writeLog(env, {
+        ts: new Date().toISOString(),
+        path: "/",
+        q,
+        tags,
+        count: videos.length,
+        status: error ? "error" : "ok",
+        error: error ? error.slice(0, 200) : undefined,
+        ms: Date.now() - started,
+      })
+    );
+  }
+
+  const html = renderPage({ query: q, videos, seed });
+  return new Response(html, {
+    headers: { ...CORS, "Content-Type": "text/html; charset=utf-8" },
+  });
+}
+
+async function handleFeed(base, url, env, ctx, started) {
+  const q = (url.searchParams.get("q") || "").trim();
+  if (!q) return json({ error: "нужен параметр q" }, 400);
+
+  const seed = url.searchParams.get("seed") || todayKey();
+  const size = Math.min(parseInt(url.searchParams.get("size") || "36", 10) || 36, 60);
+
+  const feed = await buildFeed(base, q, seed, size);
+  ctx.waitUntil(
+    writeLog(env, {
+      ts: new Date().toISOString(),
+      path: "/feed",
+      q,
+      tags: feed.tags,
+      count: feed.videos.length,
+      status: "ok",
+      ms: Date.now() - started,
+    })
+  );
+
+  return json({
+    q,
+    seed,
+    tags: feed.tags,
+    count: feed.videos.length,
+    videos: feed.videos,
+  });
+}
+
+async function handleAsset(url) {
+  const raw = url.searchParams.get("u");
+  if (!raw) return new Response("missing u", { status: 400, headers: CORS });
+
+  let target;
+  try {
+    target = new URL(raw);
+  } catch {
+    return new Response("bad u", { status: 400, headers: CORS });
+  }
+  if (!/^https?:$/.test(target.protocol)) {
+    return new Response("bad protocol", { status: 400, headers: CORS });
+  }
+  const host = target.hostname;
+  if (!ASSET_HOSTS.some((h) => host === h || host.endsWith("." + h))) {
+    return new Response("host not allowed", { status: 403, headers: CORS });
+  }
+
+  const r = await fetch(target.toString(), {
+    headers: { "User-Agent": UA, Referer: "https://www.xv-ru.com/" },
+    cf: { cacheEverything: true, cacheTtl: 86400 },
+  });
+  if (!r.ok) return new Response("upstream " + r.status, { status: 502, headers: CORS });
+
+  return new Response(r.body, {
+    status: 200,
+    headers: {
+      ...CORS,
+      "Content-Type": r.headers.get("Content-Type") || "image/jpeg",
+      "Cache-Control": "public, max-age=86400",
+    },
+  });
+}
 
 async function handleTags(base, url) {
   const tags = parseTags(await getHtml(base, "/tags"));
@@ -159,7 +269,7 @@ async function pickForTag(base, tag, wantedPage) {
   const html = await getHtml(base, tagPath);
   const pages = lastPage(html, tagPath);
 
-  let page = wantedPage ? clampPage(wantedPage, pages) : randInt(1, pages);
+  let page = wantedPage ? clampPage(wantedPage, pages) : 1 + Math.floor(Math.random() * pages);
   let pagePath = page === 1 ? tagPath : `${tagPath}/${page - 1}`;
   let videos = parseVideos(html, base);
 
@@ -188,96 +298,6 @@ async function pickForTag(base, tag, wantedPage) {
   };
 }
 
-function lastPage(html, tagPath) {
-  let pages = 1;
-
-  const m = html.match(/class="last-page"[^>]*>\s*(\d+)\s*</i);
-  if (m) pages = Math.max(pages, parseInt(m[1], 10));
-
-  const re = new RegExp(escapeRe(tagPath) + "/(\\d+)", "g");
-  let x;
-  while ((x = re.exec(html))) {
-    pages = Math.max(pages, parseInt(x[1], 10) + 1);
-  }
-  return pages;
-}
-
-function parseVideos(html, base) {
-  const starts = [];
-  const re = /<div[^>]*\bid="video_([\w-]+)"/g;
-  let m;
-  while ((m = re.exec(html))) starts.push({ at: m.index, id: m[1] });
-
-  const out = [];
-  const seen = new Set();
-
-  for (let i = 0; i < starts.length; i++) {
-    const start = starts[i].at;
-    const end = i + 1 < starts.length ? starts[i + 1].at : Math.min(html.length, start + 5000);
-    const block = html.slice(start, end);
-
-    const a =
-      block.match(/<a\s+href="(\/video\.[^"]+)"[^>]*?\btitle="([^"]*)"/s) ||
-      block.match(/<a\s+[^>]*?\btitle="([^"]*)"[^>]*?\bhref="(\/video\.[^"]+)"/s);
-    let href, title;
-    if (a) {
-      if (a[0].indexOf("href=") < a[0].indexOf("title=")) {
-        href = a[1];
-        title = a[2];
-      } else {
-        title = a[1];
-        href = a[2];
-      }
-    } else {
-      const h = block.match(/href="(\/video\.[^"]+)"/);
-      if (!h) continue;
-      href = h[1];
-      const t = block.match(/\btitle="([^"]*)"/);
-      title = t ? t[1] : "";
-    }
-    if (seen.has(href)) continue;
-    seen.add(href);
-
-    const thumb =
-      (block.match(/data-src="(https?:\/\/[^"]+)"/) || [])[1] ||
-      (block.match(/<img[^>]+src="(https?:\/\/[^"]+\.(?:jpe?g|webp))"/) || [])[1] ||
-      "";
-    const duration = ((block.match(/<span class="duration">([^<]+)<\/span>/) || [])[1] || "").trim();
-    const quality = ((block.match(/video-(?:hd|sd)-mark">([^<]+)</) || [])[1] || "").trim();
-
-    out.push({
-      id: starts[i].id,
-      url: base + href,
-      title: decodeEntities(title).trim(),
-      thumbnail: thumb,
-      duration,
-      quality,
-    });
-  }
-  return out;
-}
-
-function parseTags(html) {
-  const out = [];
-  const seen = new Set();
-  const re = /\/tags\/([A-Za-z0-9][A-Za-z0-9\-_.%]*)/g;
-  let m;
-  while ((m = re.exec(html))) {
-    let slug;
-    try {
-      slug = decodeURIComponent(m[1]).replace(/^\/+|\/+$/g, "");
-    } catch {
-      slug = m[1];
-    }
-    if (slug.length <= 2 || /^\d+$/.test(slug)) continue;
-    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(slug)) continue;
-    if (seen.has(slug)) continue;
-    seen.add(slug);
-    out.push(slug);
-  }
-  return out;
-}
-
 /* ------------------------------ logs -------------------------------- */
 
 async function writeLog(env, entry) {
@@ -295,7 +315,7 @@ async function writeLog(env, entry) {
     const body = lines.join("\n") + "\n";
 
     await ghPut(env, repo, path, branch, body, file ? file.sha : null,
-      `log: ${entry.path} ${entry.tag || "-"} ${entry.page || "-"}`);
+      `log: ${entry.path} ${entry.tag || entry.q || "-"} ${entry.page || ""}`.trim());
   } catch {
     // логи не должны ломать ответ
   }
@@ -373,65 +393,6 @@ function b64decode(s) {
 
 /* ----------------------------- helpers ------------------------------ */
 
-async function getHtml(base, path) {
-  const r = await fetch(base + path, {
-    headers: {
-      "User-Agent": UA,
-      Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
-      "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.7",
-      Referer: base + "/",
-    },
-    cf: { cacheTtl: 300, cacheEverything: true },
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status} для ${path}`);
-  return await r.text();
-}
-
-function normalizeTag(tag) {
-  let t = String(tag).trim();
-  if (/^https?:\/\//i.test(t)) {
-    try {
-      t = new URL(t).pathname;
-    } catch {}
-  }
-  t = t.replace(/^\/?tags\//i, "").replace(/\/+$/, "");
-  return t;
-}
-
-function clampPage(raw, pages) {
-  const n = parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 1) return 1;
-  return Math.min(n, pages);
-}
-
-function randInt(a, b) {
-  return a + Math.floor(Math.random() * (b - a + 1));
-}
-
-function escapeRe(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function decodeEntities(s) {
-  return String(s)
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => safeChar(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => safeChar(parseInt(d, 10)))
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&");
-}
-
-function safeChar(code) {
-  try {
-    return String.fromCodePoint(code);
-  } catch {
-    return "";
-  }
-}
-
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj, null, 2), {
     status,
@@ -439,22 +400,15 @@ function json(obj, status = 200) {
   });
 }
 
-function text(body, status = 200) {
-  return new Response(body, {
-    status,
-    headers: { ...CORS, "Content-Type": "text/plain; charset=utf-8" },
-  });
-}
-
-function help(base) {
+export function help(base) {
   return `xv_puller
 base: ${base}
 
-GET /tags                    — список тегов (JSON)
-GET /tags?format=text        — то же, построчно
-GET /pick?tag=daddy          — случайная страница + случайное видео
-GET /pick?tag=daddy&page=5   — конкретная страница
+GET /                        — лента (?q=описание)
+GET /feed?q=...              — лента в JSON
+GET /tags                    — список тегов
+GET /pick?tag=daddy          — случайное видео
 GET /random                  — случайный тег целиком
-GET /logs?limit=50           — последние записи лога (NDJSON)
+GET /logs?limit=50           — лог
 `;
 }
