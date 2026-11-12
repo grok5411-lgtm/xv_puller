@@ -4,6 +4,7 @@ compatibility_date = "2026-01-01"
 
 [assets]
 directory = "./public"
+binding = "ASSETS"
 
 [vars]
 BASE_URL = "https://www.xv-ru.com"
