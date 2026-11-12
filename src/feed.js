@@ -1,5 +1,5 @@
 import taxonomy from "./taxonomy.json";
-import { getHtml, lastPage, parseVideos, thumbOk } from "./site.js";
+import { getHtml, lastPage, parseVideos, thumbOk, fetchVideoTags } from "./site.js";
 
 /* ------------------------- seeded randomness ------------------------ */
 
@@ -109,8 +109,31 @@ export async function buildFeed(base, query, seedStr, size = 36, profileId = "")
     }
   }
 
-  const pool = shuffle(all, rng).slice(0, size + RESERVE);
-  const valid = await checkThumbs(pool);
+  const pool = shuffle(all, rng).slice(0, Math.min(all.length, size * 2 + RESERVE));
+  const need = size + RESERVE;
+  const BLOCK = new Set((taxonomy.filters && taxonomy.filters.blockTags) || []);
+  const PREFER = new Set((taxonomy.filters && taxonomy.filters.preferTags) || []);
+  const pref = [];
+  const neutral = [];
+
+  for (let i = 0; i < pool.length && pref.length + neutral.length < need; i += 6) {
+    const chunk = pool.slice(i, i + 6);
+    const res = await Promise.all(
+      chunk.map(async (v) => {
+        const tags = await fetchVideoTags(base, v.url);
+        if (tags.some((t) => BLOCK.has(t))) return null;
+        if (!(await thumbOk(v.thumbnail))) return null;
+        return { v, preferred: tags.some((t) => PREFER.has(t)) };
+      })
+    );
+    for (const r of res) {
+      if (!r) continue;
+      if (r.preferred) pref.push(r.v);
+      else neutral.push(r.v);
+    }
+  }
+
+  const valid = shuffle(pref, rng).concat(shuffle(neutral, rng)).slice(0, need);
 
   return {
     persona,
@@ -119,16 +142,6 @@ export async function buildFeed(base, query, seedStr, size = 36, profileId = "")
     reserve: valid.slice(size, size + RESERVE),
     found: all.length,
   };
-}
-
-async function checkThumbs(list, batch = 10) {
-  const ok = [];
-  for (let i = 0; i < list.length; i += batch) {
-    const chunk = list.slice(i, i + batch);
-    const res = await Promise.all(chunk.map((v) => thumbOk(v.thumbnail)));
-    chunk.forEach((v, j) => { if (res[j]) ok.push(v); });
-  }
-  return ok;
 }
 
 async function videosFromTag(base, tag, rng) {
