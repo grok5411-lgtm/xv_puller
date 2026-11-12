@@ -1,57 +1,59 @@
 # xv_puller
 
-Cloudflare Worker: случайный тег → случайная страница → случайное видео с `xv-ru.com`.
+Cloudflare Worker: страница-лента в стиле xv-ru + API.
+
+## Как это работает
+
+Ты пишешь запрос вроде «история просмотра альтушки готки» → воркер разбирает
+его на кластеры тегов (`src/taxonomy.json`) → берёт по случайной странице
+каждого тега → перемешивает → отдаёт ленту.
+
+Один и тот же запрос в течение дня даёт одинаковую ленту (seed = дата),
+кнопка «Обновить ленту» меняет seed.
 
 ## Эндпоинты
 
 | Путь | Что делает |
 |---|---|
-| `/tags` | JSON-список тегов со страницы `/tags` |
-| `/tags?format=text` | теги по одному в строке |
-| `/pick?tag=daddy` | случайная страница тега + случайное видео |
-| `/pick?tag=daddy&page=5` | конкретная страница |
-| `/random` | случайный тег + случайная страница + случайное видео |
+| `/` | страница-лента (`?q=...`) |
+| `/feed?q=...` | лента в JSON (`tags`, `videos`) |
+| `/tags` | все теги, `?format=text` — построчно |
+| `/pick?tag=daddy&page=5` | случайное видео по тегу |
+| `/random` | случайный тег + страница + видео |
 | `/logs?limit=50` | последние записи лога (NDJSON) |
+| `/a?u=<url>` | прокси картинок (только cdn xvideos/xv-ru) |
+
+## Хранение тегов
+
+`src/taxonomy.json` — единственный источник правды:
+
+```json
+{
+  "clusters": [
+    { "id": "goth", "aliases": ["гот", "goth", "готич"],
+      "tags": ["goth", "pale", "black-hair", "latex", "leather"] }
+  ],
+  "chaos": ["amateur", "public", "casting"]
+}
+```
+
+- `aliases` — подстроки запроса (русские основы + английские слова).
+- `tags` — реальные слаги сайта.
+- Порядок кластеров = приоритет (позиция совпадения в запросе).
+- `chaos` — теги для «хаотичности», когда совпадений мало.
+
+Теги не дублируются в коде — добавил кластер в JSON, и он сразу работает.
 
 ## Логи в GitHub
 
-Каждый запрос `/pick` и `/random` (а также ошибки) дописывается в
-`logs/requests.log` в ветке `logs` — отдельно от `main`, чтобы коммиты логов
-не перезапускали деплой.
+Каждый запрос пишется в `logs/requests.log`, ветка `logs` (чтобы не
+триггерить деплой). Последние 300 строк.
 
-Формат — JSON Lines:
+Нужен секрет `GITHUB_TOKEN` (fine-grained PAT, Contents: Read and write).
 
-```json
-{"ts":"2026-11-12T21:15:03.120Z","path":"/random","tag":"daddy","page":37,"pages":149,"video":"https://www.xv-ru.com/video.kdmaadbb975/_","title":"...","ms":842}
-```
+## Деплой
 
-Хранится последние 300 строк.
+Cloudflare → Workers & Pages → Connect to Git → `grok5411-lgtm/xv_puller`, `main`.
+Build: пусто. Deploy: `npx wrangler deploy`.
 
-Требуется секрет воркера:
-
-```bash
-npx wrangler secret put GITHUB_TOKEN
-# вставить fine-grained PAT: Contents = Read and write
-```
-
-Или в дашборде: Worker → Settings → Variables and Secrets → Add → Secret `GITHUB_TOKEN`.
-
-## Переменные
-
-`wrangler.toml` → `[vars]`:
-
-- `BASE_URL` — сайт, по умолчанию `https://www.xv-ru.com`
-- `GITHUB_REPO` — куда писать логи
-- `GITHUB_BRANCH` — ветка логов (`logs`)
-- `GITHUB_LOG_PATH` — путь к файлу (`logs/requests.log`)
-
-## Деплой (GitHub → Cloudflare)
-
-1. Cloudflare Dashboard → Workers & Pages → Create → Connect to Git.
-2. Репозиторий `grok5411-lgtm/xv_puller`, ветка `main`.
-3. Build command: пусто. Deploy command: `npx wrangler deploy`.
-4. Каждый push в `main` = новый деплой.
-
-## Ограничение
-
-Запросы идут с IP Cloudflare. Если xv-ru.com их блокирует (403/timeout) — воркер вернёт ошибку 502.
+Статика (`public/css/*`) раздаётся через `[assets]` в `wrangler.toml`.
