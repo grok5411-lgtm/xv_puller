@@ -109,8 +109,7 @@ export function parseTags(html) {
   return out;
 }
 
-export function normalizeTag(tag) {
-  let t = String(tag).trim();
+export function normalizeTag(tag) {  let t = String(tag).trim();
   if (/^https?:\/\//i.test(t)) {
     try {
       t = new URL(t).pathname;
@@ -134,8 +133,7 @@ export function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function escapeHtml(s) {
-  return String(s)
+export function escapeHtml(s) {  return String(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -160,5 +158,30 @@ export function safeChar(code) {
     return String.fromCodePoint(code);
   } catch {
     return "";
+  }
+}
+
+/** Проверка, что превью реально отдаётся как картинка. */
+export async function thumbOk(url) {
+  if (!url || !/^https?:\/\//i.test(url)) return false;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const r = await fetch(url, {
+      headers: { "User-Agent": UA, Referer: "https://www.xv-ru.com/" },
+      signal: ctrl.signal,
+      cf: { cacheEverything: true, cacheTtl: 86400 },
+    });
+    if (r.body) r.body.cancel().catch(() => {});
+    if (!r.ok) return false;
+    const type = r.headers.get("Content-Type") || "";
+    if (!type.startsWith("image/")) return false;
+    const len = parseInt(r.headers.get("Content-Length") || "0", 10);
+    if (len && len < 800) return false;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
