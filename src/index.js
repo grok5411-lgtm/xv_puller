@@ -160,9 +160,7 @@ function request0Headers() {
 
 async function handleFeed(base, url, env, ctx, started) {
   const q = (url.searchParams.get("q") || "").trim();
-  if (!q) return json({ error: "нужен параметр q" }, 400);
-
-  const seed = url.searchParams.get("seed") || todayKey();
+  const seed = url.searchParams.get("seed") || (q ? todayKey() : String(Date.now()));
   const size = Math.min(parseInt(url.searchParams.get("size") || "36", 10) || 36, 60);
 
   const feed = await buildFeed(base, q, seed, size);
