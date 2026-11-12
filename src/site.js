@@ -88,8 +88,7 @@ export function parseVideos(html, base) {
   return out;
 }
 
-export function parseTags(html) {
-  const out = [];
+export function parseTags(html) {  const out = [];
   const seen = new Set();
   const re = /\/tags\/([A-Za-z0-9][A-Za-z0-9\-_.%]*)/g;
   let m;
@@ -107,6 +106,53 @@ export function parseTags(html) {
     out.push(slug);
   }
   return out;
+}
+
+/** Теги со страницы видео (ссылки is-keyword). */
+export function parseVideoTags(html) {
+  const out = [];
+  for (const m of html.matchAll(/<a\b[^>]*class="[^"]*is-keyword[^"]*"[^>]*>/g)) {
+    const h = m[0].match(/href="\/tags\/([^"]+)"/);
+    if (h) out.push(decodeURIComponentSafe(h[1]).toLowerCase());
+  }
+  if (!out.length) {
+    for (const m of html.matchAll(/href="\/tags\/([^"]+)"/g)) {
+      const slug = decodeURIComponentSafe(m[1]).toLowerCase();
+      if (!out.includes(slug)) out.push(slug);
+    }
+  }
+  return [...new Set(out)];
+}
+
+/** Открыть страницу видео и вернуть её теги. */
+export async function fetchVideoTags(base, videoUrl) {
+  let path;
+  try {
+    path = new URL(videoUrl).pathname;
+  } catch {
+    return [];
+  }
+  const candidates = [path];
+  const m = path.match(/\/video\.([^/]+)/);
+  if (m) candidates.push(`/video.${m[1]}/_`);
+
+  for (const p of candidates) {
+    try {
+      const tags = parseVideoTags(await getHtml(base, p));
+      if (tags.length) return tags;
+    } catch {
+      // пробуем следующий вариант
+    }
+  }
+  return [];
+}
+
+function decodeURIComponentSafe(s) {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
 }
 
 export function normalizeTag(tag) {  let t = String(tag).trim();
