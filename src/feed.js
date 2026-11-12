@@ -61,7 +61,11 @@ export function personaTags(query) {
 
 /* ------------------------------ feed -------------------------------- */
 
-export function personaName(query, seedStr) {
+export function personaName(query, seedStr, profile) {
+  if (profile && profile.nick) {
+    const n = 10 + (hashStr(`${profile.nick}|${seedStr}`) % 90);
+    return `${profile.nick}${n}`;
+  }
   const q = String(query || "").toLowerCase();
   const ids = taxonomy.clusters
     .filter((c) => c.aliases.some((a) => q.includes(a)))
@@ -74,11 +78,12 @@ export function personaName(query, seedStr) {
 const MAX_PAGES = 4;
 const RESERVE = 12;
 
-export async function buildFeed(base, query, seedStr, size = 36) {
-  const rng = mulberry32(hashStr(`${query}|${seedStr}`));
-  const persona = personaName(query, seedStr);
+export async function buildFeed(base, query, seedStr, size = 36, profileId = "") {
+  const rng = mulberry32(hashStr(`${query}|${seedStr}|${profileId}`));
+  const profile = profileId ? taxonomy.profiles?.[profileId] : null;
+  const persona = personaName(query, seedStr, profile);
 
-  let tags = personaTags(query);
+  let tags = profile ? profile.tags.slice() : personaTags(query);
   if (!tags.length) tags = shuffle(taxonomy.chaos, rng);
 
   const chosen = tags.slice(0, MAX_PAGES);
