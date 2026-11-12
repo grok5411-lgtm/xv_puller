@@ -41,6 +41,12 @@
       "label": "Друг, 19 лет",
       "traits": ["мешанина в музыке", "аниме-игры, Helldivers 2, DRG", "без заморочек в одежде", "аниме и ютуб", "вечера один онлайн", "спокойный"],
       "tags": ["cosplay", "anime", "solo", "amateur", "young", "18-year-old", "college", "homemade"]
+    },
+    "friend18_ntr": {
+      "nick": "ntr_survivor_18",
+      "label": "Друг, 18 лет (NTR)",
+      "traits": ["те же аниме и игры", "спокойный", "пережил измену девушки", "залипает на NTR"],
+      "tags": ["netorare", "cheating-wife", "cuckold", "cosplay", "anime", "young", "18-year-old", "college"]
     }
   },
   "chaos": ["amateur", "homemade", "public", "casting", "fitness", "office", "school", "uniform", "lingerie", "stockings", "yoga", "solo"]
