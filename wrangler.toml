@@ -4,3 +4,6 @@ compatibility_date = "2026-01-01"
 
 [vars]
 BASE_URL = "https://www.xv-ru.com"
+GITHUB_REPO = "grok5411-lgtm/xv_puller"
+GITHUB_BRANCH = "logs"
+GITHUB_LOG_PATH = "logs/requests.log"
